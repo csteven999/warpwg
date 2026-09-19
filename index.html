@@ -3,24 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WARP+ 配置與 Reserved 提取器</title>
+    <title>WARP+ 多平台配置生成器</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 650px; margin: 30px auto; padding: 0 20px; line-height: 1.6; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 680px; margin: 30px auto; padding: 0 20px; line-height: 1.6; }
         button { background: #0070f3; color: white; border: none; padding: 10px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; }
         button:disabled { background: #ccc; cursor: not-allowed; }
-        textarea { width: 100%; height: 220px; font-family: monospace; font-size: 13px; margin-top: 10px; padding: 10px; box-sizing: border-box; }
-        .label { font-weight: bold; margin-top: 15px; display: block; }
+        textarea { width: 100%; height: 200px; font-family: monospace; font-size: 13px; margin-top: 8px; padding: 10px; box-sizing: border-box; }
+        .label { font-weight: bold; margin-top: 15px; display: block; color: #333; }
         #status { margin-top: 10px; font-weight: bold; color: #0070f3; }
     </style>
 </head>
 <body>
-    <h2>WARP+ 配置與 Reserved 提取器</h2>
-    <p>生成 WireGuard 配置檔並自動計算 <code>"reserved": [x, y, z]</code>：</p>
+    <h2>WARP+ 多平台配置生成器</h2>
+    <p>自動生成含 Reserved 的 <b>Sing-Box</b>、<b>Xray</b> 及 <b>WireGuard</b> 設定檔：</p>
     <button id="genBtn" onclick="generateWarp()">生成 WARP 配置</button>
     <div id="status"></div>
 
-    <span class="label">Sing-Box / Outbound JSON 格式（包含 reserved）：</span>
-    <textarea id="jsonResult" readonly placeholder="JSON 格式會顯示在這裡..."></textarea>
+    <span class="label">Xray-core / V2Ray JSON 格式（Base64 格式 reserved）：</span>
+    <textarea id="xrayResult" readonly placeholder="Xray 格式會顯示在這裡..."></textarea>
+
+    <span class="label">Sing-Box / Outbound JSON 格式（陣列格式 reserved）：</span>
+    <textarea id="singboxResult" readonly placeholder="Sing-Box 格式會顯示在這裡..."></textarea>
 
     <span class="label">標準 WireGuard (.conf) 格式：</span>
     <textarea id="confResult" readonly placeholder="WireGuard 設定檔會顯示在這裡..."></textarea>
@@ -51,11 +54,13 @@
             const btn = document.getElementById('genBtn');
             const status = document.getElementById('status');
             const confResult = document.getElementById('confResult');
-            const jsonResult = document.getElementById('jsonResult');
+            const singboxResult = document.getElementById('singboxResult');
+            const xrayResult = document.getElementById('xrayResult');
 
             btn.disabled = true;
             confResult.value = '';
-            jsonResult.value = '';
+            singboxResult.value = '';
+            xrayResult.value = '';
             status.innerText = '正在本地生成 Curve25519 金鑰對...';
 
             try {
@@ -107,14 +112,15 @@
                 const ipv6 = resResult.config.interface.addresses.v6;
                 const peerPubkey = resResult.config.peers[0].public_key;
 
-                // 4. 計算 Reserved 陣列
-                // 原理：將 172.16.0.2 格式轉為後三位的整數陣列
+                // 4. 計算 Reserved (陣列與 Base64 兩種格式)
                 const ipParts = ipv4.split('.');
-                const reserved = [
+                const reservedArr = [
                     parseInt(ipParts[1], 10),
                     parseInt(ipParts[2], 10),
                     parseInt(ipParts[3], 10)
                 ];
+                // 轉為 Base64 (供 Xray 使用)
+                const reservedBase64 = bufferToBase64(new Uint8Array(reservedArr));
 
                 // 5. 套用 WARP+ Key
                 if (licenseKey) {
@@ -133,10 +139,32 @@
                     }
                 }
 
-                // 6. 輸出 Sing-box / Xray Outbound JSON 格式
-                const jsonContent = {
+                // 6. Xray Outbound 格式
+                const xrayContent = {
+                    "tag": "WARP-Outbound",
+                    "protocol": "wireguard",
+                    "settings": {
+                        "secretKey": privateKeyStr,
+                        "address": [
+                            `${ipv4}/32`,
+                            `${ipv6}/128`
+                        ],
+                        "peers": [
+                            {
+                                "publicKey": peerPubkey,
+                                "endpoint": "engage.cloudflareclient.com:2408",
+                                "keepAlive": 25
+                            }
+                        ],
+                        "reserved": reservedBase64,
+                        "mtu": 1280
+                    }
+                };
+
+                // 7. Sing-Box Outbound 格式
+                const singboxContent = {
                     "type": "wireguard",
-                    "tag": "WARP+",
+                    "tag": "WARP-Singbox",
                     "server": "engage.cloudflareclient.com",
                     "server_port": 2408,
                     "local_address": [
@@ -145,11 +173,11 @@
                     ],
                     "private_key": privateKeyStr,
                     "peer_public_key": peerPubkey,
-                    "reserved": reserved,
+                    "reserved": reservedArr,
                     "mtu": 1280
                 };
 
-                // 7. 輸出標準 WireGuard conf 格式
+                // 8. 標準 WireGuard 格式
                 const confContent = `[Interface]
 PrivateKey = ${privateKeyStr}
 Address = ${ipv4}/32, ${ipv6}/128
@@ -161,9 +189,10 @@ PublicKey = ${peerPubkey}
 AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = engage.cloudflareclient.com:2408`;
 
-                jsonResult.value = JSON.stringify(jsonContent, null, 2);
+                xrayResult.value = JSON.stringify(xrayContent, null, 2);
+                singboxResult.value = JSON.stringify(singboxContent, null, 2);
                 confResult.value = confContent;
-                status.innerText = '生成成功！Reserved 已成功計算完成。';
+                status.innerText = '生成成功！已匯出 3 種平台格式。';
 
             } catch (err) {
                 status.innerText = '生成失敗：' + err.message;
