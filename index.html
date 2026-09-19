@@ -20,6 +20,9 @@
     <textarea id="result" readonly placeholder="點擊生成後，設定檔會顯示在這裡..."></textarea>
 
     <script>
+        // 設定 Workers 代理網址（解決 CORS 限制）
+        const API_BASE = "https://warp.daj.workers.dev";
+
         // ArrayBuffer 轉 Base64
         function bufferToBase64(buf) {
             let binary = '';
@@ -59,7 +62,6 @@
                 );
 
                 const pubRaw = await window.crypto.subtle.exportKey('raw', keyPair.publicKey);
-
                 const privateKeyStr = await exportPrivateKeyBase64(keyPair.privateKey);
                 const publicKeyStr = bufferToBase64(pubRaw);
 
@@ -75,8 +77,8 @@
                     console.warn("無法取得 WARP+ Key，將使用免費版帳號", e);
                 }
 
-                // 3. 呼叫 Cloudflare API 註冊裝置
-                status.innerText = '正在向 Cloudflare API 註冊帳號...';
+                // 3. 呼叫 Worker 代理 API 註冊裝置
+                status.innerText = '正在向 Cloudflare 註冊帳號...';
                 const regPayload = {
                     key: publicKeyStr,
                     install_id: "",
@@ -87,10 +89,9 @@
                     locale: "en_US"
                 };
 
-                const regRes = await fetch("https://api.cloudflareclient.com/v0i1909051800/reg", {
+                const regRes = await fetch(`${API_BASE}/v0i1909051800/reg`, {
                     method: "POST",
                     headers: {
-                        "User-Agent": "okhttp/3.12.1",
                         "Content-Type": "application/json; charset=UTF-8"
                     },
                     body: JSON.stringify(regPayload)
@@ -110,10 +111,9 @@
                 if (licenseKey) {
                     status.innerText = '正在綁定 WARP+ 流量資格...';
                     try {
-                        await fetch(`https://api.cloudflareclient.com/v0i1909051800/reg/${accountId}/account`, {
+                        await fetch(`${API_BASE}/v0i1909051800/reg/${accountId}/account`, {
                             method: "PUT",
                             headers: {
-                                "User-Agent": "okhttp/3.12.1",
                                 "Content-Type": "application/json; charset=UTF-8",
                                 "Authorization": `Bearer ${token}`
                             },
