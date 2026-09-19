@@ -112,19 +112,17 @@
                 const ipv6 = resResult.config.interface.addresses.v6;
                 const peerPubkey = resResult.config.peers[0].public_key;
 
-                // 4. 解析 API 原生 Reserved [b1, b2, b3]
-                let reservedArr = resResult.config.peers[0].reserved;
-
-                // 防錯處理：避免極端情況下回傳字串或無效值
-                if (!Array.isArray(reservedArr)) {
-                    if (typeof reservedArr === 'string') {
-                        const binary = window.atob(reservedArr);
-                        const bytes = new Uint8Array(binary.length);
-                        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                        reservedArr = [bytes[0], bytes[1], bytes[2]];
-                    } else {
-                        reservedArr = [0, 0, 0];
-                    }
+                // 4. 正確提取 API 中的 Base64 client_id 並轉為 3-Byte 數字陣列
+                const rawClientIdBase64 = resResult.config.client_id;
+                let reservedArr = [0, 0, 0];
+                
+                if (rawClientIdBase64) {
+                    const binary = window.atob(rawClientIdBase64);
+                    reservedArr = [
+                        binary.charCodeAt(0) || 0,
+                        binary.charCodeAt(1) || 0,
+                        binary.charCodeAt(2) || 0
+                    ];
                 }
 
                 // 5. 套用 WARP+ Key
@@ -144,7 +142,7 @@
                     }
                 }
 
-                // 6. Xray Outbound 格式 (共用原生整數陣列)
+                // 6. Xray Outbound 格式
                 const xrayContent = {
                     "tag": "WARP-Outbound",
                     "protocol": "wireguard",
@@ -166,7 +164,7 @@
                     }
                 };
 
-                // 7. Sing-Box Outbound 格式 (共用原生整數陣列)
+                // 7. Sing-Box Outbound 格式
                 const singboxContent = {
                     "type": "wireguard",
                     "tag": "WARP-Singbox",
@@ -197,7 +195,7 @@ Endpoint = engage.cloudflareclient.com:2408`;
                 xrayResult.value = JSON.stringify(xrayContent, null, 2);
                 singboxResult.value = JSON.stringify(singboxContent, null, 2);
                 confResult.value = confContent;
-                status.innerText = '生成成功！已匯出符合規格之配置。';
+                status.innerText = '生成成功！已提取真實的 Reserved 數值。';
 
             } catch (err) {
                 status.innerText = '生成失敗：' + err.message;
