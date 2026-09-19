@@ -20,12 +20,23 @@
     <textarea id="result" readonly placeholder="點擊生成後，設定檔會顯示在這裡..."></textarea>
 
     <script>
-        // 輔助函數：Base64轉ArrayBuffer與ArrayBuffer轉Base64
+        // ArrayBuffer 轉 Base64
         function bufferToBase64(buf) {
             let binary = '';
             const bytes = new Uint8Array(buf);
             for (let i = 0; i < bytes.byteLength; i++) {
                 binary += String.fromCharCode(bytes[i]);
+            }
+            return window.btoa(binary);
+        }
+
+        // X25519 私鑰以 PKCS#8 匯出並擷取 Raw 32 Bytes 轉 Base64
+        async function exportPrivateKeyBase64(privateKey) {
+            const pkcs8Buf = await window.crypto.subtle.exportKey('pkcs8', privateKey);
+            const rawBytes = new Uint8Array(pkcs8Buf).slice(-32);
+            let binary = '';
+            for (let i = 0; i < rawBytes.byteLength; i++) {
+                binary += String.fromCharCode(rawBytes[i]);
             }
             return window.btoa(binary);
         }
@@ -47,10 +58,9 @@
                     ['deriveKey', 'deriveBits']
                 );
 
-                const privRaw = await window.crypto.subtle.exportKey('raw', keyPair.privateKey);
                 const pubRaw = await window.crypto.subtle.exportKey('raw', keyPair.publicKey);
 
-                const privateKeyStr = bufferToBase64(privRaw);
+                const privateKeyStr = await exportPrivateKeyBase64(keyPair.privateKey);
                 const publicKeyStr = bufferToBase64(pubRaw);
 
                 // 2. 嘗試獲取最新的 WARP+ License Key
