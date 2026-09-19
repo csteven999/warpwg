@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WARP+ 配置檔生成器</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }
+        button { background: #0070f3; color: white; border: none; padding: 10px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        textarea { width: 100%; height: 260px; font-family: monospace; font-size: 13px; margin-top: 15px; padding: 10px; box-sizing: border-box; }
+        #status { margin-top: 10px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h2>WARP+ WireGuard 配置檔生成器</h2>
+    <p>點擊下方按鈕，直接在瀏覽器生成獨立的 <code>warp.conf</code>：</p>
+    <button id="genBtn" onclick="generateWarp()">生成 WARP+ 設定檔</button>
+    <div id="status"></div>
+    <textarea id="result" readonly placeholder="點擊生成後，設定檔會顯示在這裡..."></textarea>
+
+    <script>
+        // 輔助函數：Base64轉ArrayBuffer與ArrayBuffer轉Base64
+        function bufferToBase64(buf) {
+            let binary = '';
+            const bytes = new Uint8Array(buf);
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return window.btoa(binary);
+        }
+
+        async function generateWarp() {
+            const btn = document.getElementById('genBtn');
+            const status = document.getElementById('status');
+            const result = document.getElementById('result');
+
+            btn.disabled = true;
+            result.value = '';
+            status.innerText = '正在本地生成 Curve25519 金鑰對...';
+
+            try {
+                // 1. 使用 Web Cryptography API 生成 X25519 金鑰對
+                const keyPair = await window.crypto.subtle.generateKey(
+                    { name: 'X25519' },
+                    true,
+                    ['deriveKey', 'deriveBits']
+                );
+
+                const privRaw = await window.crypto.subtle.exportKey('raw', keyPair.privateKey);
+                const pubRaw = await window.crypto.subtle.exportKey('raw', keyPair.publicKey);
+
+                const privateKeyStr = bufferToBase64(privRaw);
+                const publicKeyStr = bufferToBase64(pubRaw);
+
+                // 2. 嘗試獲取最新的 WARP+ License Key
+                status.innerText = '正在獲取免費 WARP+ 密鑰...';
+                let licenseKey = "";
+                try {
+                    const keyRes = await fetch("https://raw.githubusercontent.com/yeb996/WarpPlusKey/main/README.md");
+                    const keyText = await keyRes.text();
+                    const match = keyText.match(/[a-zA-Z0-9]{8}-[a-zA-Z0-9]{8}-[a-zA-Z0-9]{8}/);
+                    if (match) licenseKey = match[0];
+                } catch (e) {
+                    console.warn("無法取得 WARP+ Key，將使用免費版帳號", e);
+                }
+
+                // 3. 呼叫 Cloudflare API 註冊裝置
+                status.innerText = '正在向 Cloudflare API 註冊帳號...';
+                const regPayload = {
+                    key: publicKeyStr,
+                    install_id: "",
+                    fcm_token: "",
+                    tos: new Date().toISOString(),
+                    model: "PC",
+                    type: "Android",
+                    locale: "en_US"
+                };
+
+                const regRes = await fetch("https://api.cloudflareclient.com/v0i1909051800/reg", {
+                    method: "POST",
+                    headers: {
+                        "User-Agent": "okhttp/3.12.1",
+                        "Content-Type": "application/json; charset=UTF-8"
+                    },
+                    body: JSON.stringify(regPayload)
+                });
+
+                if (!regRes.ok) throw new Error(`註冊失敗 HTTP ${regRes.status}`);
+
+                const regData = await regRes.json();
+                const resResult = regData.result;
+                const accountId = resResult.id;
+                const token = resResult.token;
+                const ipv4 = resResult.config.interface.addresses.v4;
+                const ipv6 = resResult.config.interface.addresses.v6;
+                const peerPubkey = resResult.config.peers[0].public_key;
+
+                // 4. 套用 WARP+ Key 升級帳號
+                if (licenseKey) {
+                    status.innerText = '正在綁定 WARP+ 流量資格...';
+                    try {
+                        await fetch(`https://api.cloudflareclient.com/v0i1909051800/reg/${accountId}/account`, {
+                            method: "PUT",
+                            headers: {
+                                "User-Agent": "okhttp/3.12.1",
+                                "Content-Type": "application/json; charset=UTF-8",
+                                "Authorization": `Bearer ${token}`
+                            },
+                            body: JSON.stringify({ license: licenseKey })
+                        });
+                    } catch (e) {
+                        console.warn("升級 WARP+ 失敗", e);
+                    }
+                }
+
+                // 5. 輸出標準 WireGuard 格式
+                const confContent = `[Interface]
+PrivateKey = ${privateKeyStr}
+Address = ${ipv4}/32, ${ipv6}/128
+DNS = 1.1.1.1, 1.0.0.1, 2606:4700:4700::1111, 2606:4700:4700::1001
+MTU = 1280
+
+[Peer]
+PublicKey = ${peerPubkey}
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = engage.cloudflareclient.com:2408`;
+
+                result.value = confContent;
+                status.innerText = '生成成功！可以直接複製或另存為 warp.conf。';
+            } catch (err) {
+                status.innerText = '生成失敗：' + err.message;
+                console.error(err);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
