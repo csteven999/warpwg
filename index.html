@@ -3,27 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WARP+ 配置檔生成器</title>
+    <title>WARP+ 配置與 Reserved 提取器</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 650px; margin: 30px auto; padding: 0 20px; line-height: 1.6; }
         button { background: #0070f3; color: white; border: none; padding: 10px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; }
         button:disabled { background: #ccc; cursor: not-allowed; }
-        textarea { width: 100%; height: 260px; font-family: monospace; font-size: 13px; margin-top: 15px; padding: 10px; box-sizing: border-box; }
-        #status { margin-top: 10px; font-weight: bold; }
+        textarea { width: 100%; height: 220px; font-family: monospace; font-size: 13px; margin-top: 10px; padding: 10px; box-sizing: border-box; }
+        .label { font-weight: bold; margin-top: 15px; display: block; }
+        #status { margin-top: 10px; font-weight: bold; color: #0070f3; }
     </style>
 </head>
 <body>
-    <h2>WARP+ WireGuard 配置檔生成器</h2>
-    <p>點擊下方按鈕，直接在瀏覽器生成獨立的 <code>warp.conf</code>：</p>
-    <button id="genBtn" onclick="generateWarp()">生成 WARP+ 設定檔</button>
+    <h2>WARP+ 配置與 Reserved 提取器</h2>
+    <p>生成 WireGuard 配置檔並自動計算 <code>"reserved": [x, y, z]</code>：</p>
+    <button id="genBtn" onclick="generateWarp()">生成 WARP 配置</button>
     <div id="status"></div>
-    <textarea id="result" readonly placeholder="點擊生成後，設定檔會顯示在這裡..."></textarea>
+
+    <span class="label">Sing-Box / Outbound JSON 格式（包含 reserved）：</span>
+    <textarea id="jsonResult" readonly placeholder="JSON 格式會顯示在這裡..."></textarea>
+
+    <span class="label">標準 WireGuard (.conf) 格式：</span>
+    <textarea id="confResult" readonly placeholder="WireGuard 設定檔會顯示在這裡..."></textarea>
 
     <script>
-        // 設定 Workers 代理網址（解決 CORS 限制）
         const API_BASE = "https://warp.daj.workers.dev";
 
-        // ArrayBuffer 轉 Base64
         function bufferToBase64(buf) {
             let binary = '';
             const bytes = new Uint8Array(buf);
@@ -33,7 +37,6 @@
             return window.btoa(binary);
         }
 
-        // X25519 私鑰以 PKCS#8 匯出並擷取 Raw 32 Bytes 轉 Base64
         async function exportPrivateKeyBase64(privateKey) {
             const pkcs8Buf = await window.crypto.subtle.exportKey('pkcs8', privateKey);
             const rawBytes = new Uint8Array(pkcs8Buf).slice(-32);
@@ -47,25 +50,24 @@
         async function generateWarp() {
             const btn = document.getElementById('genBtn');
             const status = document.getElementById('status');
-            const result = document.getElementById('result');
+            const confResult = document.getElementById('confResult');
+            const jsonResult = document.getElementById('jsonResult');
 
             btn.disabled = true;
-            result.value = '';
+            confResult.value = '';
+            jsonResult.value = '';
             status.innerText = '正在本地生成 Curve25519 金鑰對...';
 
             try {
-                // 1. 使用 Web Cryptography API 生成 X25519 金鑰對
+                // 1. 生成 X25519 金鑰對
                 const keyPair = await window.crypto.subtle.generateKey(
-                    { name: 'X25519' },
-                    true,
-                    ['deriveKey', 'deriveBits']
+                    { name: 'X25519' }, true, ['deriveKey', 'deriveBits']
                 );
-
                 const pubRaw = await window.crypto.subtle.exportKey('raw', keyPair.publicKey);
                 const privateKeyStr = await exportPrivateKeyBase64(keyPair.privateKey);
                 const publicKeyStr = bufferToBase64(pubRaw);
 
-                // 2. 嘗試獲取最新的 WARP+ License Key
+                // 2. 獲取 WARP+ Key
                 status.innerText = '正在獲取免費 WARP+ 密鑰...';
                 let licenseKey = "";
                 try {
@@ -74,10 +76,10 @@
                     const match = keyText.match(/[a-zA-Z0-9]{8}-[a-zA-Z0-9]{8}-[a-zA-Z0-9]{8}/);
                     if (match) licenseKey = match[0];
                 } catch (e) {
-                    console.warn("無法取得 WARP+ Key，將使用免費版帳號", e);
+                    console.warn("無法取得 WARP+ Key，使用預設等級", e);
                 }
 
-                // 3. 呼叫 Worker 代理 API 註冊裝置
+                // 3. 向 Cloudflare 註冊
                 status.innerText = '正在向 Cloudflare 註冊帳號...';
                 const regPayload = {
                     key: publicKeyStr,
@@ -91,9 +93,7 @@
 
                 const regRes = await fetch(`${API_BASE}/v0i1909051800/reg`, {
                     method: "POST",
-                    headers: {
-                        "Content-Type": "application/json; charset=UTF-8"
-                    },
+                    headers: { "Content-Type": "application/json; charset=UTF-8" },
                     body: JSON.stringify(regPayload)
                 });
 
@@ -107,7 +107,16 @@
                 const ipv6 = resResult.config.interface.addresses.v6;
                 const peerPubkey = resResult.config.peers[0].public_key;
 
-                // 4. 套用 WARP+ Key 升級帳號
+                // 4. 計算 Reserved 陣列
+                // 原理：將 172.16.0.2 格式轉為後三位的整數陣列
+                const ipParts = ipv4.split('.');
+                const reserved = [
+                    parseInt(ipParts[1], 10),
+                    parseInt(ipParts[2], 10),
+                    parseInt(ipParts[3], 10)
+                ];
+
+                // 5. 套用 WARP+ Key
                 if (licenseKey) {
                     status.innerText = '正在綁定 WARP+ 流量資格...';
                     try {
@@ -124,11 +133,27 @@
                     }
                 }
 
-                // 5. 輸出標準 WireGuard 格式
+                // 6. 輸出 Sing-box / Xray Outbound JSON 格式
+                const jsonContent = {
+                    "type": "wireguard",
+                    "tag": "WARP+",
+                    "server": "engage.cloudflareclient.com",
+                    "server_port": 2408,
+                    "local_address": [
+                        `${ipv4}/32`,
+                        `${ipv6}/128`
+                    ],
+                    "private_key": privateKeyStr,
+                    "peer_public_key": peerPubkey,
+                    "reserved": reserved,
+                    "mtu": 1280
+                };
+
+                // 7. 輸出標準 WireGuard conf 格式
                 const confContent = `[Interface]
 PrivateKey = ${privateKeyStr}
 Address = ${ipv4}/32, ${ipv6}/128
-DNS = 1.1.1.1, 1.0.0.1, 2606:4700:4700::1111, 2606:4700:4700::1001
+DNS = 1.1.1.1, 1.0.0.1
 MTU = 1280
 
 [Peer]
@@ -136,8 +161,10 @@ PublicKey = ${peerPubkey}
 AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = engage.cloudflareclient.com:2408`;
 
-                result.value = confContent;
-                status.innerText = '生成成功！可以直接複製或另存為 warp.conf。';
+                jsonResult.value = JSON.stringify(jsonContent, null, 2);
+                confResult.value = confContent;
+                status.innerText = '生成成功！Reserved 已成功計算完成。';
+
             } catch (err) {
                 status.innerText = '生成失敗：' + err.message;
                 console.error(err);
